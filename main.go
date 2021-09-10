@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
+	"sync"
 	"time"
+
+	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
 )
 
 type Location struct {
@@ -26,7 +28,7 @@ type VaccineLocation struct {
 
 func main() {
 	log.Println("Start scraping")
-	resp, err := http.Get("https://raw.githubusercontent.com/CovidEngine/vaxxnzlocations/main/uniqLocationsNew.json")
+	resp, err := http.Get("https://raw.githubusercontent.com/CovidEngine/vaxxnzlocations/main/uniqLocations.json")
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -44,10 +46,16 @@ func main() {
 
 	for index, location := range locations {
 		if index < 1 {
-			_, err := getAvailability(location)
+			availability, err := getAvailability(location)
 			if err != nil {
-				log.Println(err)
+				log.Errorln(err)
+				continue
 			}
+			vaxSlot, err := getAvailabilitySlots(availability, location)
+			if err != nil {
+				log.Errorln(err)
+			}
+			log.Println(vaxSlot)
 		}
 	}
 }
@@ -90,8 +98,7 @@ func getAvailability(location VaccineLocation) (LocationAvailability, error) {
 	client := &http.Client{}
 	req, err := http.NewRequest("POST", "https://skl-api.bookmyvaccine.covid19.health.nz/public/locations/"+location.ExtId+"/availability", responseBody)
 	if err != nil {
-		fmt.Print(err.Error())
-		return LocationAvailability{}, err
+		return LocationAvailability{}, errors.WithStack(err)
 	}
 	req.Header.Add("Accept", "application/JSON")
 	req.Header.Add("User-Agent", "node-fetch/1.0 (+https://github.com/bitinn/node-fetch)")
@@ -99,17 +106,17 @@ func getAvailability(location VaccineLocation) (LocationAvailability, error) {
 	resp, err := client.Do(req)
 
 	if err != nil {
-		return LocationAvailability{}, err
+		return LocationAvailability{}, errors.WithStack(err)
 	}
 	defer resp.Body.Close()
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return LocationAvailability{}, err
+		return LocationAvailability{}, errors.WithStack(err)
 	}
 	var availability LocationAvailability
 	err = json.Unmarshal(bodyBytes, &availability)
 	if err != nil {
-		return LocationAvailability{}, err
+		return LocationAvailability{}, errors.WithStack(err)
 	}
 
 	return LocationAvailability{
@@ -127,4 +134,74 @@ func filterOutUnavailable(a []Availability) []Availability {
 		}
 	}
 	return availability
+}
+
+type SlotRequestBody struct {
+	VaccineData string `json:"vaccineData"`
+	GroupSize   int    `json:"groupSize"`
+	Url         string `json:"url"`
+	TimeZone    string `json:"timeZone"`
+}
+
+type SlotWithAvailability struct {
+	LocalStartTime  string `json:"localStartTime"`
+	DurationSeconds int    `json:"durationSeconds"`
+}
+
+type VaccineSlots struct {
+	LocationExtId string                 `json:"locationExtId"`
+	Date          string                 `json:"date"`
+	Slots         []SlotWithAvailability `json:"slotsWithAvailability"`
+}
+
+func getAvailabilitySlots(locA LocationAvailability, location VaccineLocation) ([]VaccineSlots, error) {
+	locationSlot := make([]VaccineSlots, 0)
+	var wg sync.WaitGroup
+	for _, availDate := range locA.Availability {
+		wg.Add(1)
+		go func() {
+			postBody, _ := json.Marshal(SlotRequestBody{
+				VaccineData: "WyJhMVQ0YTAwMDAwMEdiVGdFQUsiXQ==",
+				GroupSize:   1,
+				Url:         "https://app.bookmyvaccine.covid19.health.nz/appointment-select",
+				TimeZone:    "Pacific/Auckland",
+			})
+			postBodyBuffer := bytes.NewBuffer(postBody)
+
+			client := &http.Client{}
+			req, err := http.NewRequest("POST", "https://skl-api.bookmyvaccine.covid19.health.nz/public/locations/"+location.ExtId+"/date/"+availDate.Date+"/slots", postBodyBuffer)
+			if err != nil {
+				log.Errorln(errors.WithStack(err))
+				return
+			}
+			req.Header.Add("Accept", "application/JSON")
+			req.Header.Add("User-Agent", "node-fetch/1.0 (+https://github.com/bitinn/node-fetch)")
+			req.Header.Add("Content-Type", "application/json")
+			resp, err := client.Do(req)
+			if err != nil {
+				log.Errorln(errors.WithStack(err))
+				return
+			}
+			if resp.StatusCode != http.StatusOK {
+				log.Errorln(resp)
+				return
+			}
+			defer resp.Body.Close()
+			bodyBytes, err := ioutil.ReadAll(resp.Body)
+			if err != nil {
+				log.Errorln(errors.WithStack(err))
+				return
+			}
+			var slots VaccineSlots
+			err = json.Unmarshal(bodyBytes, &slots)
+			if err != nil {
+				log.Errorln(errors.WithStack(err))
+				return
+			}
+			locationSlot = append(locationSlot, slots)
+			defer wg.Done()
+		}()
+	}
+	wg.Wait()
+	return locationSlot, nil
 }
