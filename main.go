@@ -162,6 +162,7 @@ func getAvailabilitySlots(locA LocationAvailability, location VaccineLocation) (
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
 	for _, availDate := range locA.Availability {
+		log.WithField("location", location.DisplayAddress).WithField("Date", availDate.Date).Infoln("Start fetching")
 		wg.Add(1)
 		go func(l Availability) {
 			select {
@@ -210,6 +211,7 @@ func getAvailabilitySlots(locA LocationAvailability, location VaccineLocation) (
 			}
 			locationSlot = append(locationSlot, slots)
 			defer wg.Done()
+			defer log.WithField("location", location.DisplayAddress).WithField("Date", l.Date).Infoln("Finished")
 		}(availDate)
 	}
 	wg.Wait()
