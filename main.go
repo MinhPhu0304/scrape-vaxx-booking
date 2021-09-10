@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io/ioutil"
 	"net/http"
@@ -159,9 +160,15 @@ type VaccineSlots struct {
 func getAvailabilitySlots(locA LocationAvailability, location VaccineLocation) ([]VaccineSlots, error) {
 	locationSlot := make([]VaccineSlots, 0)
 	var wg sync.WaitGroup
+	ctx, cancel := context.WithCancel(context.Background())
 	for _, availDate := range locA.Availability {
 		wg.Add(1)
 		go func(l Availability) {
+			select {
+			case <-ctx.Done():
+				return // Error somewhere, terminate
+			default: // Default is must to avoid blocking
+			}
 			postBody, _ := json.Marshal(SlotRequestBody{
 				VaccineData: "WyJhMVQ0YTAwMDAwMEdiVGdFQUsiXQ==",
 				GroupSize:   1,
@@ -185,6 +192,7 @@ func getAvailabilitySlots(locA LocationAvailability, location VaccineLocation) (
 				return
 			}
 			if resp.StatusCode != http.StatusOK {
+				cancel()
 				log.Errorln(resp)
 				return
 			}
@@ -205,6 +213,7 @@ func getAvailabilitySlots(locA LocationAvailability, location VaccineLocation) (
 		}(availDate)
 	}
 	wg.Wait()
+	defer cancel()
 	return locationSlot, nil
 }
 
