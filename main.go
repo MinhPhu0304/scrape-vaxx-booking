@@ -44,18 +44,20 @@ func main() {
 		log.Fatal(err)
 	}
 
-	for index, location := range locations {
-		if index < 1 {
-			availability, err := getAvailability(location)
-			if err != nil {
-				log.Errorln(err)
-				continue
-			}
-			vaxSlot, err := getAvailabilitySlots(availability, location)
-			if err != nil {
-				log.Errorln(err)
-			}
-			log.Println(vaxSlot)
+	for _, location := range locations {
+		availability, err := getAvailability(location)
+		if err != nil {
+			log.Errorln(err)
+			continue
+		}
+		vaxSlot, err := getAvailabilitySlots(availability, location)
+		if err != nil {
+			log.Errorln(err)
+		}
+		file, _ := json.MarshalIndent(combineAllSlots(vaxSlot), "", " ")
+		err = ioutil.WriteFile("./slots/"+location.ExtId+"-test"+".json", file, 0644)
+		if err != nil {
+			log.Errorln(err)
 		}
 	}
 }
@@ -159,7 +161,7 @@ func getAvailabilitySlots(locA LocationAvailability, location VaccineLocation) (
 	var wg sync.WaitGroup
 	for _, availDate := range locA.Availability {
 		wg.Add(1)
-		go func() {
+		go func(l Availability) {
 			postBody, _ := json.Marshal(SlotRequestBody{
 				VaccineData: "WyJhMVQ0YTAwMDAwMEdiVGdFQUsiXQ==",
 				GroupSize:   1,
@@ -169,13 +171,13 @@ func getAvailabilitySlots(locA LocationAvailability, location VaccineLocation) (
 			postBodyBuffer := bytes.NewBuffer(postBody)
 
 			client := &http.Client{}
-			req, err := http.NewRequest("POST", "https://skl-api.bookmyvaccine.covid19.health.nz/public/locations/"+location.ExtId+"/date/"+availDate.Date+"/slots", postBodyBuffer)
+			req, err := http.NewRequest("POST", "https://skl-api.bookmyvaccine.covid19.health.nz/public/locations/"+location.ExtId+"/date/"+l.Date+"/slots", postBodyBuffer)
 			if err != nil {
 				log.Errorln(errors.WithStack(err))
 				return
 			}
 			req.Header.Add("Accept", "application/JSON")
-			req.Header.Add("User-Agent", "node-fetch/1.0 (+https://github.com/bitinn/node-fetch)")
+			req.Header.Add("User-Agent", "node-fetch/1.0 (+https://github.com/bitinn/node-fetch)") // LOLLLL
 			req.Header.Add("Content-Type", "application/json")
 			resp, err := client.Do(req)
 			if err != nil {
@@ -200,8 +202,18 @@ func getAvailabilitySlots(locA LocationAvailability, location VaccineLocation) (
 			}
 			locationSlot = append(locationSlot, slots)
 			defer wg.Done()
-		}()
+		}(availDate)
 	}
 	wg.Wait()
 	return locationSlot, nil
+}
+
+type VaxAvailability map[string][]SlotWithAvailability
+
+func combineAllSlots(slots []VaccineSlots) VaxAvailability {
+	a := make(VaxAvailability)
+	for _, slot := range slots {
+		a[slot.Date] = slot.Slots
+	}
+	return a
 }
